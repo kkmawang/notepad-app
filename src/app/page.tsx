@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Search, Star, MoreVertical, LayoutGrid, CheckSquare, Settings, Bell, MessageSquare, Menu, Plus, Trash2, X } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { useEffect, useState } from "react";
+import { Search, Star, MoreVertical, LayoutGrid, CheckSquare, Settings, Bell, MessageSquare, Menu, Plus, Trash2, X, LogOut, ChevronDown } from "lucide-react";
 
 type NoteColor = 'white' | 'yellow' | 'green' | 'blue';
 
@@ -12,8 +13,9 @@ interface Note {
   color: NoteColor;
   isStarred: boolean;
   folder: string;
-  createdAt: number;
-  updatedAt: number;
+  userId: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 const colorMap = {
@@ -24,6 +26,7 @@ const colorMap = {
 };
 
 export default function Home() {
+  const [session, setSession] = useState<any>(null);
   const [mounted, setMounted] = useState(false);
   const [notes, setNotes] = useState<Note[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -37,93 +40,152 @@ export default function Home() {
   // Prevent hydration mismatch by only rendering after mount
   useEffect(() => {
     setMounted(true);
+    
+    // Check initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  // Load notes and folders from local storage on mount
+  // Load notes from Supabase on mount
   useEffect(() => {
-    if (!mounted) return;
+    if (!mounted || !session) return;
     
+    const fetchNotes = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('Note')
+          .select('*')
+          .order('updatedAt', { ascending: false });
+        
+        if (error) throw error;
+        if (data) setNotes(data as Note[]);
+      } catch (e) {
+        console.error("Failed to fetch notes", e);
+      }
+    };
+
+    fetchNotes();
+
     const savedFolders = localStorage.getItem("notepad-folders");
     if (savedFolders) {
       try { setFolders(JSON.parse(savedFolders)); } catch (e) { console.error("Failed to parse folders", e); }
     }
+  }, [mounted, session]);
 
-    const savedNotes = localStorage.getItem("notepad-data-light");
-    if (savedNotes) {
-      try {
-        setNotes(JSON.parse(savedNotes));
-      } catch (e) {
-        console.error("Failed to parse notes", e);
-      }
-    } else {
-      // Dummy data for initial view to match reference image
-      const initialNotes: Note[] = [
-        { id: '1', title: '간단한 내용은 여기에 메모하세요', content: '', color: 'white', isStarred: false, folder: '내 메모', createdAt: Date.now(), updatedAt: Date.now() },
-        { id: '2', title: '리모델링 준비', content: '업체 미팅 때 확인할 것들\n- 날짜 확정하기 (착공일, 완료일)\n- A/S 기간 확실하게 협의하기\n- 요구사항 전달하기', color: 'yellow', isStarred: true, folder: '인테리어', createdAt: Date.now(), updatedAt: Date.now() },
-        { id: '3', title: '2박 3일 제주도 여행', content: 'DAY 1\n제주 공항 근처 카페, 저녁 은희네 해장국\nDAY 2\n우도 스쿠터, 성산일출봉', color: 'blue', isStarred: false, folder: '여행', createdAt: Date.now(), updatedAt: Date.now() },
-        { id: '4', title: '글로벌 컨퍼런스', content: '비판적 분석력, 데이터 기반 사고, 배움에 대한 열망 등의 요소를 중요하게 평가.\n무엇보다도 motivation, 가슴이 뛰는 일을 찾아야 한다.\nElevator pitch로 짧고 강렬하게 인상 남기기.', color: 'green', isStarred: false, folder: '내 메모', createdAt: Date.now(), updatedAt: Date.now() },
-      ];
-      setNotes(initialNotes);
-    }
-  }, [mounted]);
-
-  // Save notes to local storage whenever they change
-  useEffect(() => {
-    if (!mounted) return;
-    
-    if (notes.length > 0) {
-      localStorage.setItem("notepad-data-light", JSON.stringify(notes));
-    }
-  }, [notes, mounted]);
-
-  // Save folders to local storage whenever they change
+  // Save folders to local storage
   useEffect(() => {
     if (!mounted) return;
     localStorage.setItem("notepad-folders", JSON.stringify(folders));
   }, [folders, mounted]);
 
-  const createNewNote = () => {
+  const createNewNote = async () => {
+    if (!session?.user) return;
+
     const defaultFolder = (activeFilter !== 'all' && activeFilter !== 'important') 
       ? activeFilter 
-      : (folders.length > 0 ? folders[0] : '새 폴더');
+      : (folders.length > 0 ? folders[0] : '내 메모');
 
-    const newNote: Note = {
-      id: Date.now().toString(),
-      title: "",
-      content: "",
-      color: "white",
-      isStarred: false,
-      folder: defaultFolder,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    setActiveNote(newNote);
-    setIsEditing(true);
+    try {
+      const { data, error } = await supabase
+        .from('Note')
+        .insert({
+          id: crypto.randomUUID(), // Using UUID for consistency with previous CUID-like behavior
+          title: "",
+          content: "",
+          color: "white",
+          folder: defaultFolder,
+          isStarred: false,
+          userId: session.user.id,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      if (data) {
+        const newNote = data as Note;
+        setNotes([newNote, ...notes]);
+        setActiveNote(newNote);
+        setIsEditing(true);
+      }
+    } catch (e) {
+      console.error("Failed to create note", e);
+    }
   };
 
-  const saveNote = () => {
+  const saveNote = async () => {
     if (!activeNote) return;
     
-    setNotes(prev => {
-      const exists = prev.find(n => n.id === activeNote.id);
-      if (exists) {
-        return prev.map(n => n.id === activeNote.id ? { ...activeNote, updatedAt: Date.now() } : n);
-      } else {
-        return [activeNote, ...prev];
+    try {
+      const { data, error } = await supabase
+        .from('Note')
+        .update({
+          title: activeNote.title,
+          content: activeNote.content,
+          color: activeNote.color,
+          folder: activeNote.folder,
+          isStarred: activeNote.isStarred,
+          updatedAt: new Date().toISOString(),
+        })
+        .eq('id', activeNote.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      if (data) {
+        const updatedNote = data as Note;
+        setNotes(prev => prev.map(n => n.id === updatedNote.id ? updatedNote : n));
+        setIsEditing(false);
+        setActiveNote(null);
       }
-    });
-    setIsEditing(false);
-    setActiveNote(null);
+    } catch (e) {
+      console.error("Failed to save note", e);
+    }
   };
 
-  const deleteNote = (id: string, e: React.MouseEvent) => {
+  const deleteNote = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setNotes(notes.filter((n) => n.id !== id));
+    try {
+      const { error } = await supabase
+        .from('Note')
+        .delete()
+        .eq('id', id);
+      
+      if (error) throw error;
+      setNotes(notes.filter((n) => n.id !== id));
+    } catch (e) {
+      console.error("Failed to delete note", e);
+    }
   };
 
-  const toggleStar = (id: string, e: React.MouseEvent) => {
+  const toggleStar = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setNotes(notes.map(n => n.id === id ? { ...n, isStarred: !n.isStarred } : n));
+    const note = notes.find(n => n.id === id);
+    if (!note) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('Note')
+        .update({ isStarred: !note.isStarred, updatedAt: new Date().toISOString() })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      if (data) {
+        const updatedNote = data as Note;
+        setNotes(notes.map(n => n.id === id ? updatedNote : n));
+      }
+    } catch (e) {
+      console.error("Failed to toggle star", e);
+    }
   };
 
   const filteredNotes = notes.filter(n => {
@@ -143,7 +205,7 @@ export default function Home() {
     return matchesSearch && matchesCategory;
   });
 
-  const formatDate = (timestamp: number) => {
+  const formatDate = (timestamp: string) => {
     const d = new Date(timestamp);
     const today = new Date();
     if (d.toDateString() === today.toDateString()) {
@@ -268,10 +330,26 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="px-6 py-4 border-t border-gray-100 text-xs text-gray-500 space-y-3 font-medium">
-          <div className="cursor-pointer hover:text-gray-800">환경설정</div>
-          <div className="cursor-pointer hover:text-gray-800">고객센터</div>
-          <div className="cursor-pointer hover:text-gray-800">공지사항</div>
+        <div className="px-6 py-4 border-t border-gray-100 space-y-3">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-8 h-8 rounded-full bg-[#00c73c]/10 flex items-center justify-center text-[#00c73c] font-bold text-xs">
+              {session?.user?.name?.[0]?.toUpperCase() || 'U'}
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <p className="text-xs font-bold text-gray-800 truncate">{session?.user?.name}</p>
+              <p className="text-[10px] text-gray-500 truncate">{session?.user?.email}</p>
+            </div>
+          </div>
+          <button 
+            onClick={() => supabase.auth.signOut()}
+            className="w-full flex items-center gap-2 text-xs text-gray-500 hover:text-red-500 transition-colors font-medium"
+          >
+            <LogOut size={14} /> 로그아웃
+          </button>
+          <div className="pt-2 space-y-2 opacity-60">
+            <div className="cursor-pointer hover:text-gray-800 text-[11px]">환경설정</div>
+            <div className="cursor-pointer hover:text-gray-800 text-[11px]">고객센터</div>
+          </div>
         </div>
       </aside>
 
@@ -403,7 +481,7 @@ export default function Home() {
                 )}
                 {folders.map(f => <option key={f} value={f}>{f}</option>)}
               </select>
-              <span>수정일: {formatDate(Date.now())}</span>
+              <span>수정일: {formatDate(new Date().toISOString())}</span>
             </div>
           </div>
         </div>
@@ -428,7 +506,4 @@ export default function Home() {
   );
 }
 
-// Chevron indicator for top bar mock
-const ChevronDown = ({size, className}: {size: number, className?: string}) => (
-  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m6 9 6 6 6-6"/></svg>
-);
+// Note: ChevronDown is now imported from lucide-react
